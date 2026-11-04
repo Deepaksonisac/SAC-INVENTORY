@@ -42,33 +42,6 @@ const siteFields = (values: Values): FieldDef[] => [
   { name: 'remarks', label: 'Notes', type: 'textarea', full: true },
 ]
 
-const allocationFields = (sites: Site[] | undefined, products: Product[] | undefined) => (values: Values): FieldDef[] => [
-  {
-    name: 'site_id',
-    label: 'Site',
-    type: 'select',
-    required: true,
-    disabled: Boolean(values._locked),
-    options: (sites ?? []).map((site) => ({ value: site.id, label: site.site_name })),
-  },
-  {
-    name: 'product_id',
-    label: 'Item',
-    type: 'select',
-    required: true,
-    disabled: Boolean(values._locked),
-    options: (products ?? []).map((product) => ({
-      value: product.id,
-      label: `${product.product_code} — ${product.product_name}`,
-    })),
-  },
-  { name: 'boq_qty', label: 'BOQ quantity', type: 'number' },
-  { name: 'opening_stock', label: 'Opening balance', type: 'number' },
-  { name: 'min_stock', label: 'Minimum stock', type: 'number' },
-  { name: 'allocation_date', label: 'Effective date', type: 'date', required: true },
-  { name: 'remarks', label: 'Notes', type: 'textarea', full: true },
-]
-
 const allocationValues = (row: StockRow): Values => ({
   site_id: String(row.site_id),
   product_id: String(row.product_id),
@@ -113,7 +86,7 @@ export function SiteListPage() {
         remarks: site.remarks,
       })}
       dialogDescription="Site details are saved permanently in the local inventory database."
-      deleteDescription="This permanently deletes the site, its item allocations, opening balances, Stock IN/OUT history, and any transfers involving this site. A transfer to another site is removed at both ends. Deletion is blocked if removing a transfer receipt would make later stock at another site negative."
+      deleteDescription="This permanently deletes the site, its item allocations, starting stock, Stock IN/OUT history, and any transfers involving this site. A transfer to another site is removed at both ends. Deletion is blocked if removing a transfer receipt would make later stock at another site negative."
     />
   )
 }
@@ -125,7 +98,7 @@ function stockColumns(): Column<StockRow>[] {
     { key: 'product_name', header: 'Item', className: 'min-w-36 whitespace-normal' },
     { key: 'category', header: 'Category' },
     { key: 'unit', header: 'Unit' },
-    qtyCol<StockRow>('opening_stock', 'Opening'),
+    qtyCol<StockRow>('opening_stock', 'Starting stock'),
     qtyCol<StockRow>('total_received', 'Stock IN'),
     qtyCol<StockRow>('total_issued', 'Stock OUT'),
     {
@@ -180,7 +153,7 @@ function ItemDialogFields({
           { name: 'unit', label: 'Unit', required: true, placeholder: 'e.g. Nos, Kg, Mtr' },
         ]),
     { name: 'boq_qty', label: 'BOQ quantity', type: 'number' },
-    { name: 'opening_stock', label: 'Opening balance', type: 'number' },
+    { name: 'opening_stock', label: 'Starting stock', type: 'number' },
     { name: 'min_stock', label: 'Minimum stock', type: 'number' },
     { name: 'allocation_date', label: 'Effective date', type: 'date', required: true },
     { name: 'remarks', label: 'Notes', type: 'textarea', full: true },
@@ -245,7 +218,7 @@ export function ItemListPage() {
     { key: 'product_name', header: 'Item', className: 'min-w-36 whitespace-normal' },
     { key: 'category', header: 'Category' },
     { key: 'unit', header: 'Unit' },
-    qtyCol<StockRow>('opening_stock', 'Opening'),
+    qtyCol<StockRow>('opening_stock', 'Starting stock'),
     qtyCol<StockRow>('total_received', 'Stock IN'),
     qtyCol<StockRow>('total_issued', 'Stock OUT'),
     qtyCol<StockRow>('available', 'Available'),
@@ -308,7 +281,7 @@ export function ItemListPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete {deleteTarget?.product_name} from this site?</AlertDialogTitle>
             <AlertDialogDescription>
-              This permanently removes the item from {deleteTarget?.site_name} and deletes its opening balance and
+              This permanently removes the item from {deleteTarget?.site_name} and deletes its starting stock and
               transaction history. The item remains allocated at other sites. Any related transfers are removed at
               both ends, and deletion is blocked if that would make another site's later balance negative.
             </AlertDialogDescription>
@@ -333,7 +306,7 @@ export function ItemListPage() {
         onOpenChange={(open) => !open && setDialog(null)}
         mode={dialog?.row ? 'edit' : 'create'}
         title={dialog?.row ? 'Edit site item' : 'Add item to site'}
-        description="Opening balance, minimum stock and BOQ are stored on this site's item allocation."
+        description="Starting stock, minimum stock and BOQ are stored on this site's item allocation."
         initial={
           dialog?.row
             ? { ...allocationValues(dialog.row), product_id: String(dialog.row.product_id), _editing: 'true' }
@@ -378,81 +351,6 @@ export function ItemListPage() {
   )
 }
 
-export function OpeningBalancePage() {
-  const { data: sites } = useApi<Site[]>('sites')
-  const { data: products } = useApi<Product[]>('products')
-  const [siteId, setSiteId] = useState('')
-  const columns: Column<StockRow>[] = [
-    { key: 'site_name', header: 'Site', className: 'font-medium' },
-    { key: 'product_code', header: 'Item code' },
-    { key: 'product_name', header: 'Item' },
-    { key: 'unit', header: 'Unit' },
-    qtyCol<StockRow>('opening_stock', 'Opening balance'),
-    dateCol<StockRow>('allocation_date', 'Effective date'),
-  ]
-  return (
-    <ResourcePage<StockRow>
-      title="Opening Balance"
-      description="Set the starting quantity for each item at each site. Later receipts and issues are calculated on top of it."
-      singular="Opening balance"
-      resource="allocations"
-      params={{ site_id: siteId }}
-      columns={columns}
-      filters={<SiteFilter value={siteId} onChange={setSiteId} />}
-      fields={allocationFields(sites, products)}
-      blank={() => ({
-        site_id: siteId || '',
-        product_id: '',
-        boq_qty: '0',
-        opening_stock: '0',
-        min_stock: '0',
-        allocation_date: todayISO(),
-        remarks: '',
-      })}
-      toValues={allocationValues}
-      allowView={false}
-      addLabel="Add opening balance"
-      addDisabled={!sites?.length || !products?.length}
-      addHint={sites?.length ? 'Add items from the Item List before setting their opening balance.' : 'Add a site first.'}
-      dialogDescription="Changing an opening balance is blocked if it would make a later transaction negative."
-    />
-  )
-}
-
-export function ClosingBalancePage() {
-  const [siteId, setSiteId] = useState('')
-  const [productId, setProductId] = useState('')
-  const { data: rows, isLoading, error } = useApi<StockRow[]>('stock', { site_id: siteId, product_id: productId })
-  const columns: Column<StockRow>[] = [
-    { key: 'site_name', header: 'Site', className: 'min-w-32 font-medium' },
-    { key: 'product_code', header: 'Item code' },
-    { key: 'product_name', header: 'Item', className: 'min-w-36' },
-    { key: 'unit', header: 'Unit' },
-    qtyCol<StockRow>('opening_stock', 'Opening'),
-    qtyCol<StockRow>('total_received', 'Stock IN'),
-    qtyCol<StockRow>('total_issued', 'Stock OUT'),
-    {
-      key: 'available',
-      header: 'Available balance',
-      align: 'right',
-      value: (row) => row.available,
-      render: (row) => <span className="font-semibold tabular-nums">{formatQty(row.available)} {row.unit}</span>,
-    },
-    { key: 'status', header: 'Status', render: (row) => <StatusBadge status={row.status} /> },
-  ]
-  return (
-    <div className="flex flex-col gap-5">
-      <PageHeader title="Closing Balance" description="Live balance = opening stock + Stock IN − Stock OUT. Balances recalculate after every transaction." />
-      <div className="flex flex-wrap gap-2">
-        <SiteFilter value={siteId} onChange={setSiteId} />
-        <ProductFilter value={productId} onChange={setProductId} />
-      </div>
-      {error && <p role="alert" className="text-sm text-destructive">{error.message}</p>}
-      <DataTable columns={columns} rows={rows} rowKey={(row) => row.id} isLoading={isLoading} exportTitle="Closing Balance" />
-    </div>
-  )
-}
-
 export function ReportsPage() {
   const [report, setReport] = useState<'stock' | 'ledger'>('stock')
   const [siteId, setSiteId] = useState('')
@@ -493,12 +391,11 @@ export function ReportsPage() {
   )
 }
 
-type ImportKind = 'sites' | 'items' | 'opening' | 'inward' | 'outward'
+type ImportKind = 'sites' | 'items' | 'inward' | 'outward'
 
 const IMPORT_GUIDES: Record<ImportKind, string> = {
   sites: 'Site Name, Site Code, Location, Client, Start Date, Status, Remarks',
-  items: 'Site, Item Code, Item Name, Category, Unit, Opening Stock, Minimum Stock, BOQ Qty, Allocation Date, Remarks',
-  opening: 'Site, Item Code, Item Name, Unit, Opening Stock, Minimum Stock, BOQ Qty, Allocation Date',
+  items: 'Site, Item Code, Item Name, Category, Unit, Starting Stock, Minimum Stock, BOQ Qty, Allocation Date, Remarks',
   inward: 'Site, Item Name, Unit, Date, Quantity, Supplier, Received By, Challan No, Remarks',
   outward: 'Site, Item Name, Unit, Date, Quantity, Issued By, Issued To, Purpose, Challan No, Remarks',
 }
@@ -525,6 +422,23 @@ function importDate(value: string) {
   return value
 }
 
+async function loadRows<T>(resource: string): Promise<T[]> {
+  const response = await fetch(`/api/${resource}`)
+  let payload: unknown
+  try {
+    payload = await response.json()
+  } catch {
+    throw new Error(`Could not read the latest ${resource} data`)
+  }
+  if (!response.ok) {
+    const message =
+      payload && typeof payload === 'object' && 'error' in payload ? String(payload.error) : `Could not load ${resource}`
+    throw new Error(message)
+  }
+  if (!Array.isArray(payload)) throw new Error(`Unexpected response while loading ${resource}`)
+  return payload as T[]
+}
+
 export function ImportExportPage() {
   const { data: sites } = useApi<Site[]>('sites')
   const { data: products } = useApi<Product[]>('products')
@@ -541,12 +455,12 @@ export function ImportExportPage() {
     const data = (stock ?? [])
     const columns = exportKind === 'sites'
       ? ['Site Name', 'Site Code', 'Location', 'Client', 'Start Date', 'Status', 'Remarks']
-      : exportKind === 'items' || exportKind === 'opening'
-        ? ['Site', 'Item Code', 'Item Name', 'Category', 'Unit', 'Opening Stock', 'Minimum Stock', 'BOQ Qty', 'Allocation Date', ...(exportKind === 'items' ? ['Stock IN', 'Stock OUT', 'Available Balance'] : []), 'Remarks']
+      : exportKind === 'items'
+        ? ['Site', 'Item Code', 'Item Name', 'Category', 'Unit', 'Starting Stock', 'Minimum Stock', 'BOQ Qty', 'Allocation Date', 'Stock IN', 'Stock OUT', 'Available Balance', 'Remarks']
         : ['Site', 'Item Name', 'Unit', 'Date', 'Quantity', exportKind === 'inward' ? 'Supplier' : 'Issued To', exportKind === 'inward' ? 'Received By' : 'Issued By', ...(exportKind === 'outward' ? ['Purpose'] : []), 'Challan No', 'Remarks']
     const rows = exportKind === 'sites'
       ? (sites ?? []).map((site) => [site.site_name, site.site_code, site.location, site.client_name, site.start_date ?? '', site.status, site.remarks])
-      : exportKind === 'items' || exportKind === 'opening'
+      : exportKind === 'items'
         ? data.map((row) => [
             row.site_name, row.product_code, row.product_name, row.category, row.unit, row.opening_stock,
             row.min_stock, row.boq_qty, row.allocation_date,
@@ -576,13 +490,16 @@ export function ImportExportPage() {
       const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
       if (rows.length === 0) throw new Error('The selected worksheet has no data rows.')
 
+      let knownSites = kind === 'sites' ? [] : await loadRows<Site>('sites')
+      let knownProducts = kind === 'items' ? await loadRows<Product>('products') : []
+      let knownStock = kind === 'items' ? await loadRows<StockRow>('stock') : []
       let completed = 0
       const failures: string[] = []
       for (let index = 0; index < rows.length; index += 1) {
         const row = rows[index]
         try {
           const siteLabel = rowValue(row, 'Site')
-          const site = (sites ?? []).find((entry) =>
+          const site = knownSites.find((entry) =>
             entry.site_name.toLowerCase() === siteLabel.toLowerCase() ||
             entry.site_code.toLowerCase() === siteLabel.toLowerCase(),
           )
@@ -598,16 +515,14 @@ export function ImportExportPage() {
               status: rowValue(row, 'Status') || 'Active',
               remarks: rowValue(row, 'Remarks'),
             }, false)
-          } else if (kind === 'items' || kind === 'opening') {
+          } else if (kind === 'items') {
             const code = rowValue(row, 'Item Code')
             const itemName = rowValue(row, 'Item Name')
-            const product = (products ?? []).find((entry) =>
+            const product = knownProducts.find((entry) =>
               (code && entry.product_code.toLowerCase() === code.toLowerCase()) ||
               entry.product_name.toLowerCase() === itemName.toLowerCase(),
             )
-            const existing = kind === 'opening'
-              ? (stock ?? []).find((entry) => entry.site_id === site?.id && entry.product_id === product?.id)
-              : undefined
+            const existing = knownStock.find((entry) => entry.site_id === site?.id && entry.product_id === product?.id)
             const payload = {
               site_id: site?.id,
               product_id: product?.id,
@@ -615,7 +530,7 @@ export function ImportExportPage() {
               product_name: itemName,
               category: rowValue(row, 'Category'),
               unit: rowValue(row, 'Unit'),
-              opening_stock: rowValue(row, 'Opening Stock') || '0',
+              opening_stock: rowValue(row, 'Starting Stock') || rowValue(row, 'Opening Stock') || '0',
               min_stock: rowValue(row, 'Minimum Stock') || '0',
               boq_qty: rowValue(row, 'BOQ Qty') || '0',
               allocation_date: importDate(rowValue(row, 'Allocation Date')) || todayISO(),
@@ -623,6 +538,10 @@ export function ImportExportPage() {
             }
             if (existing) await apiSend('PUT', 'allocations', { ...payload, id: existing.id }, false)
             else await apiSend('POST', 'site-items', payload, false)
+            completed += 1
+            knownProducts = await loadRows<Product>('products')
+            knownStock = await loadRows<StockRow>('stock')
+            continue
           } else {
             const isInward = kind === 'inward'
             await apiSend('POST', kind, {
@@ -675,8 +594,7 @@ export function ImportExportPage() {
               className="h-9 rounded-md border border-input bg-card px-3 text-sm"
             >
               <option value="sites">Sites</option>
-              <option value="items">Site items and balances</option>
-              <option value="opening">Opening balances</option>
+              <option value="items">Site items and starting stock</option>
               <option value="inward">Stock IN transactions</option>
               <option value="outward">Stock OUT transactions</option>
             </select>
@@ -697,8 +615,7 @@ export function ImportExportPage() {
               className="h-9 rounded-md border border-input bg-card px-3 text-sm"
             >
               <option value="sites">Sites</option>
-              <option value="items">Site items and opening balances</option>
-              <option value="opening">Opening balances</option>
+              <option value="items">Site items and starting stock</option>
               <option value="inward">Stock IN transactions</option>
               <option value="outward">Stock OUT transactions</option>
             </select>

@@ -51,7 +51,12 @@ const quantity = (
 const dateValue = (b: Body, key: string, label: string, required = true) => {
   const raw = text(b, key, label, required)
   if (!raw) return null
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw) || Number.isNaN(Date.parse(raw))) {
+  const date = new Date(`${raw}T00:00:00.000Z`)
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(raw) ||
+    Number.isNaN(date.getTime()) ||
+    date.toISOString().slice(0, 10) !== raw
+  ) {
     throw new InventoryError(`${label} must be a valid date`)
   }
   return raw

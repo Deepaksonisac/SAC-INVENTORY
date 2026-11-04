@@ -93,7 +93,7 @@ export function SiteInventory({ site, items, onStatusChange, onEdit, onDelete }:
               <tr>
                 <th className={cn(HEAD, 'text-left')}>Item</th>
                 <th className={cn(HEAD, 'text-right')}>BOQ</th>
-                <th className={cn(HEAD, 'text-right')}>Opening</th>
+                <th className={cn(HEAD, 'text-right')}>Starting stock</th>
                 <th className={cn(HEAD, 'text-right')}>Received</th>
                 <th className={cn(HEAD, 'text-right')}>Issued</th>
                 <th className={cn(HEAD, 'text-right')}>In Stock</th>

@@ -17,3 +17,5 @@ node_modules
 
 # Local SQLite inventory database (the uploaded .xlsx source stays tracked)
 /data/inventory.db*
+.vercel
+.env*

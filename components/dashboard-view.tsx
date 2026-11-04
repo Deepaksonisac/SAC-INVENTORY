@@ -318,7 +318,7 @@ export function DashboardView() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete {deleteTarget?.site_name}?</AlertDialogTitle>
             <AlertDialogDescription>
-              This permanently deletes the site, its item allocations, opening balances, Stock IN/OUT history, and any
+              This permanently deletes the site, its item allocations, starting stock, Stock IN/OUT history, and any
               transfers involving it. Transfers are removed at both sites; deletion is blocked if another site's later
               balance would become negative.
             </AlertDialogDescription>

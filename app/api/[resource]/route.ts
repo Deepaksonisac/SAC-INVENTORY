@@ -9,13 +9,24 @@ type Ctx = { params: Promise<{ resource: string }> }
 type Body = Record<string, unknown>
 
 const intParam = (sp: URLSearchParams, key: string) => {
-  const n = Number(sp.get(key))
-  return Number.isInteger(n) && n > 0 ? n : null
+  const raw = sp.get(key)
+  if (!raw) return null
+  const n = Number(raw)
+  if (!Number.isInteger(n) || n <= 0) throw new inv.InventoryError(`${key} must be a positive integer`)
+  return n
 }
 
-const strParam = (sp: URLSearchParams, key: string) => {
-  const v = sp.get(key)
-  return v && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null
+const dateParam = (sp: URLSearchParams, key: string) => {
+  const value = sp.get(key)
+  if (!value) return null
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new inv.InventoryError(`${key} must be a valid date`)
+  }
+  const date = new Date(`${value}T00:00:00.000Z`)
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) {
+    throw new inv.InventoryError(`${key} must be a valid date`)
+  }
+  return value
 }
 
 const fail = (error: unknown) => {
@@ -48,11 +59,11 @@ const deleters: Record<string, (ids: number[]) => DeleteResult> = {
 export async function GET(request: Request, { params }: Ctx) {
   const { resource } = await params
   const sp = new URL(request.url).searchParams
-  const siteId = intParam(sp, 'site_id')
-  const productId = intParam(sp, 'product_id')
-  const from = strParam(sp, 'from')
-  const to = strParam(sp, 'to')
   try {
+    const siteId = intParam(sp, 'site_id')
+    const productId = intParam(sp, 'product_id')
+    const from = dateParam(sp, 'from')
+    const to = dateParam(sp, 'to')
     switch (resource) {
       case 'sites':
         return NextResponse.json(inv.listSites())
@@ -85,9 +96,18 @@ async function write(request: Request, ctx: Ctx, method: 'POST' | 'PUT') {
     return NextResponse.json({ error: 'Site items can only be created with POST' }, { status: 405 })
   }
   try {
-    const body = (await request.json()) as Body
-    if (method === 'PUT' && !body.id) {
-      return NextResponse.json({ error: 'Record id is required' }, { status: 400 })
+    let parsed: unknown
+    try {
+      parsed = await request.json()
+    } catch {
+      return NextResponse.json({ error: 'Request body must be valid JSON' }, { status: 400 })
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return NextResponse.json({ error: 'Request body must be a JSON object' }, { status: 400 })
+    }
+    const body = parsed as Body
+    if (method === 'PUT' && (!Number.isInteger(Number(body.id)) || Number(body.id) <= 0)) {
+      return NextResponse.json({ error: 'A valid record id is required' }, { status: 400 })
     }
     if (method === 'POST') delete body.id
     const id = save(body)
@@ -105,9 +125,23 @@ export async function DELETE(request: Request, ctx: Ctx) {
   const remove = deleters[resource]
   if (!remove) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   try {
-    const body = (await request.json()) as { ids?: unknown }
-    const ids = Array.isArray(body.ids) ? body.ids.map(Number).filter((n) => Number.isInteger(n) && n > 0) : []
-    if (ids.length === 0) return NextResponse.json({ error: 'No records selected' }, { status: 400 })
+    let parsed: unknown
+    try {
+      parsed = await request.json()
+    } catch {
+      return NextResponse.json({ error: 'Request body must be valid JSON' }, { status: 400 })
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return NextResponse.json({ error: 'Request body must be a JSON object' }, { status: 400 })
+    }
+    const body = parsed as { ids?: unknown }
+    if (!Array.isArray(body.ids) || body.ids.length === 0) {
+      return NextResponse.json({ error: 'No records selected' }, { status: 400 })
+    }
+    const ids = body.ids.map(Number)
+    if (ids.some((id) => !Number.isInteger(id) || id <= 0)) {
+      return NextResponse.json({ error: 'Record ids must be positive integers' }, { status: 400 })
+    }
     return NextResponse.json(remove(ids))
   } catch (error) {
     return fail(error)
