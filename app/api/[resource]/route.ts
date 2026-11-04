@@ -37,7 +37,7 @@ const fail = (error: unknown) => {
   return NextResponse.json({ error: 'Unexpected server error' }, { status: 500 })
 }
 
-const savers: Record<string, (body: Body) => number> = {
+const savers: Record<string, (body: Body) => Promise<number>> = {
   sites: inv.saveSite,
   products: inv.saveProduct,
   allocations: inv.saveAllocation,
@@ -47,7 +47,7 @@ const savers: Record<string, (body: Body) => number> = {
   transfers: inv.saveTransfer,
 }
 
-const deleters: Record<string, (ids: number[]) => DeleteResult> = {
+const deleters: Record<string, (ids: number[]) => Promise<DeleteResult>> = {
   sites: inv.deleteSites,
   products: inv.deleteProducts,
   allocations: inv.deleteAllocations,
@@ -66,20 +66,20 @@ export async function GET(request: Request, { params }: Ctx) {
     const to = dateParam(sp, 'to')
     switch (resource) {
       case 'sites':
-        return NextResponse.json(inv.listSites())
+        return NextResponse.json(await inv.listSites())
       case 'products':
-        return NextResponse.json(inv.listProducts())
+        return NextResponse.json(await inv.listProducts())
       case 'allocations':
-        return NextResponse.json(inv.stockRows({ siteId, productId }))
+        return NextResponse.json(await inv.stockRows({ siteId, productId }))
       case 'stock':
-        return NextResponse.json(inv.stockRows({ siteId, productId, from, to }))
+        return NextResponse.json(await inv.stockRows({ siteId, productId, from, to }))
       case 'ledger':
-        return NextResponse.json(inv.ledgerRows({ siteId, productId, from, to }))
+        return NextResponse.json(await inv.ledgerRows({ siteId, productId, from, to }))
       case 'inward':
       case 'outward':
-        return NextResponse.json(inv.listTxns(resource, { siteId, productId, from, to }))
+        return NextResponse.json(await inv.listTxns(resource, { siteId, productId, from, to }))
       case 'transfers':
-        return NextResponse.json(inv.listTransfers({ siteId, from, to }))
+        return NextResponse.json(await inv.listTransfers({ siteId, from, to }))
       default:
         return NextResponse.json({ error: 'Not found' }, { status: 404 })
     }
@@ -110,7 +110,7 @@ async function write(request: Request, ctx: Ctx, method: 'POST' | 'PUT') {
       return NextResponse.json({ error: 'A valid record id is required' }, { status: 400 })
     }
     if (method === 'POST') delete body.id
-    const id = save(body)
+    const id = await save(body)
     return NextResponse.json({ id })
   } catch (error) {
     return fail(error)
@@ -142,7 +142,7 @@ export async function DELETE(request: Request, ctx: Ctx) {
     if (ids.some((id) => !Number.isInteger(id) || id <= 0)) {
       return NextResponse.json({ error: 'Record ids must be positive integers' }, { status: 400 })
     }
-    return NextResponse.json(remove(ids))
+    return NextResponse.json(await remove(ids))
   } catch (error) {
     return fail(error)
   }
