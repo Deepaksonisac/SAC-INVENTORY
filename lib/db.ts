@@ -10,11 +10,13 @@ const globalForDb = globalThis as unknown as { __inventoryPool?: Pool }
 
 function getPool(): Pool {
   if (globalForDb.__inventoryPool) return globalForDb.__inventoryPool
-  if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is not configured')
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 5 })
-  globalForDb.__inventoryPool = pool
-  return pool
+  const created = new Pool({ connectionString: process.env.DATABASE_URL, max: 5 })
+  globalForDb.__inventoryPool = created
+  return created
 }
+
+/** Shared by the inventory queries and Better Auth so there is a single connection pool. */
+export const pool = getPool()
 
 const txClient = new AsyncLocalStorage<PoolClient>()
 

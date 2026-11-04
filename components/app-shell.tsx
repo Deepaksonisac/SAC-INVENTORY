@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import {
   LayoutDashboard,
+  LogOut,
   Menu,
   FileBarChart2,
   Package,
@@ -17,6 +18,7 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetDescription, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
+import { authClient } from '@/lib/auth-client'
 import { cn } from '@/lib/utils'
 
 const NAV: { href: string; label: string; icon: LucideIcon }[] = [
@@ -70,7 +72,36 @@ function Brand() {
   )
 }
 
-export function AppShell({ children }: { children: React.ReactNode }) {
+function UserMenu({ user }: { user: ShellUser }) {
+  const router = useRouter()
+  const [signingOut, setSigningOut] = useState(false)
+
+  const handleSignOut = async () => {
+    setSigningOut(true)
+    await authClient.signOut()
+    router.push('/sign-in')
+    router.refresh()
+  }
+
+  return (
+    <div className="ml-auto flex items-center gap-3">
+      <div className="hidden text-right leading-tight sm:block">
+        <p className="max-w-48 truncate text-sm font-medium">{user.name}</p>
+        <p className="max-w-48 truncate text-xs text-muted-foreground">{user.email}</p>
+      </div>
+      <Button variant="outline" size="sm" onClick={handleSignOut} disabled={signingOut}>
+        <LogOut /> {signingOut ? 'Signing out...' : 'Sign out'}
+      </Button>
+    </div>
+  )
+}
+
+interface ShellUser {
+  name: string
+  email: string
+}
+
+export function AppShell({ children, user }: { children: React.ReactNode; user: ShellUser }) {
   const pathname = usePathname()
   const [open, setOpen] = useState(false)
   const current = NAV.find((n) => (n.href === '/' ? pathname === '/' : pathname.startsWith(n.href)))
@@ -104,9 +135,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </SheetContent>
           </Sheet>
           <p className="truncate text-sm font-medium">{current?.label ?? 'SiteStock ERP'}</p>
-          <p className="ml-auto hidden text-xs text-muted-foreground sm:block">
-            Stock updates automatically with every IN and OUT entry
-          </p>
+          <UserMenu user={user} />
         </header>
         <main className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-5 sm:px-6">{children}</main>
       </div>

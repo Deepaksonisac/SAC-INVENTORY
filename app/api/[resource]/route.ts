@@ -1,6 +1,12 @@
 import { NextResponse } from 'next/server'
+import { auth } from '@/lib/auth'
 import * as inv from '@/lib/inventory'
 import type { DeleteResult } from '@/lib/types'
+
+const unauthorized = async (request: Request) => {
+  const session = await auth.api.getSession({ headers: request.headers })
+  return session?.user ? null : NextResponse.json({ error: 'Please sign in to continue' }, { status: 401 })
+}
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -57,6 +63,8 @@ const deleters: Record<string, (ids: number[]) => Promise<DeleteResult>> = {
 }
 
 export async function GET(request: Request, { params }: Ctx) {
+  const denied = await unauthorized(request)
+  if (denied) return denied
   const { resource } = await params
   const sp = new URL(request.url).searchParams
   try {
@@ -89,6 +97,8 @@ export async function GET(request: Request, { params }: Ctx) {
 }
 
 async function write(request: Request, ctx: Ctx, method: 'POST' | 'PUT') {
+  const denied = await unauthorized(request)
+  if (denied) return denied
   const { resource } = await ctx.params
   const save = savers[resource]
   if (!save) return NextResponse.json({ error: 'Not found' }, { status: 404 })
@@ -121,6 +131,8 @@ export const POST = (request: Request, ctx: Ctx) => write(request, ctx, 'POST')
 export const PUT = (request: Request, ctx: Ctx) => write(request, ctx, 'PUT')
 
 export async function DELETE(request: Request, ctx: Ctx) {
+  const denied = await unauthorized(request)
+  if (denied) return denied
   const { resource } = await ctx.params
   const remove = deleters[resource]
   if (!remove) return NextResponse.json({ error: 'Not found' }, { status: 404 })
