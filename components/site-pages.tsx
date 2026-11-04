@@ -85,7 +85,7 @@ export function SiteListPage() {
         status: site.status,
         remarks: site.remarks,
       })}
-      dialogDescription="Site details are saved permanently in the local inventory database."
+      dialogDescription="Site details are saved permanently in the inventory database."
       deleteDescription="This permanently deletes the site, its item allocations, starting stock, Stock IN/OUT history, and any transfers involving this site. A transfer to another site is removed at both ends. Deletion is blocked if removing a transfer receipt would make later stock at another site negative."
     />
   )
