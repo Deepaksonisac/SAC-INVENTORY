@@ -153,7 +153,7 @@ export function SiteMovementsPage() {
       <PageHeader
         title="Material Movement"
         description="Issue material from each site’s separate Central Store, record returns against original challans, and review site-level balances."
-        action={<div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => openForm('opening')}><Plus /> Set opening stock</Button><Button variant="outline" onClick={() => openForm('return')} disabled={!issues?.length}><RotateCcw /> Material RETURN</Button><Button onClick={() => openForm('issue')}><Plus /> Material OUT</Button></div>}
+        action={<div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => openForm('return')} disabled={!issues?.length}><RotateCcw /> Material RETURN</Button><Button onClick={() => openForm('issue')}><Plus /> Material OUT</Button></div>}
       />
       {notice && <p role="status" className="rounded-lg bg-secondary px-3 py-2 text-sm text-secondary-foreground">{notice}</p>}
       {errors && <p role="alert" className="text-sm text-destructive">{errors.message}</p>}
@@ -182,6 +182,13 @@ export function SiteMovementsPage() {
         </CardHeader>
         <CardContent><DataTable columns={movementColumns} rows={movements} rowKey={(row) => row.id} isLoading={movementsLoading} exportTitle="Site Material Movement History" emptyText="No material movements match these filters." /></CardContent>
       </Card>
+      <details className="rounded-lg border bg-card px-4 py-3">
+        <summary className="cursor-pointer text-sm font-medium">Central Store opening balance setup</summary>
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-3">
+          <p className="text-sm text-muted-foreground">Opening balances are setup only; daily movements are limited to Material OUT and Material RETURN.</p>
+          <Button variant="outline" onClick={() => openForm('opening')}><Plus /> Set opening stock</Button>
+        </div>
+      </details>
       <FormDialog
         open={dialog !== null}
         onOpenChange={(open) => !open && setDialog(null)}
