@@ -11,6 +11,7 @@ import {
   Package,
   PackageMinus,
   PackagePlus,
+  Truck,
   ArrowUpFromLine,
   Building2,
   Warehouse,
@@ -27,6 +28,7 @@ const NAV: { href: string; label: string; icon: LucideIcon }[] = [
   { href: '/items', label: 'Item List', icon: Package },
   { href: '/inward', label: 'Stock IN', icon: PackagePlus },
   { href: '/outward', label: 'Stock OUT', icon: PackageMinus },
+  { href: '/material-movements', label: 'Material Movement', icon: Truck },
   { href: '/reports', label: 'Reports', icon: FileBarChart2 },
   { href: '/import-export', label: 'Import / Export', icon: ArrowUpFromLine },
 ]

@@ -8,6 +8,8 @@ import type {
   Site,
   StockRow,
   StockStatus,
+  SiteMovementRow,
+  SiteMovementSummary,
   TransferRow,
   TxnRow,
 } from './types'
@@ -170,6 +172,7 @@ interface RawTxn {
   counterpart: string | null
   reference_no: string | null
   approved_by: string | null
+  movement_type?: 'ISSUE' | 'RETURN'
 }
 
 /**
@@ -184,7 +187,7 @@ export async function buildLedgers(sms: SmInfo[]): Promise<Map<number, Bundle>> 
 
   const smIds = sms.map((sm) => sm.id)
   const placeholders = smIds.map(() => '?').join(',')
-  const [inward, outward] = await Promise.all([
+  const [inward, outward, movements] = await Promise.all([
     all<RawTxn>(
       `SELECT i.id, i.site_material_id, i.txn_date, i.quantity, i.supplier AS party, i.received_by AS person,
               i.challan_no, i.remarks, '' AS purpose, i.transfer_id,
@@ -207,6 +210,16 @@ export async function buildLedgers(sms: SmInfo[]): Promise<Map<number, Bundle>> 
         WHERE o.site_material_id IN (${placeholders})`,
       ...smIds,
     ),
+    all<RawTxn>(
+      `SELECT m.id, sm.id AS site_material_id, m.movement_date AS txn_date, m.quantity,
+              'Central Store' AS party, '' AS person, m.challan_no, m.remarks, '' AS purpose,
+              NULL::integer AS transfer_id, NULL::text AS counterpart, NULL::text AS reference_no,
+              NULL::text AS approved_by, m.movement_type
+         FROM site_material_movements m
+         JOIN site_materials sm ON sm.site_id=m.site_id AND sm.product_id=m.product_id
+        WHERE sm.id IN (${placeholders})`,
+      ...smIds,
+    ),
   ])
 
   const push = (raw: RawTxn, kind: 'in' | 'out') => {
@@ -214,16 +227,14 @@ export async function buildLedgers(sms: SmInfo[]): Promise<Map<number, Bundle>> 
     if (!bundle) return
     const { sm } = bundle
     const isTransfer = raw.transfer_id !== null
-    const type: LedgerType = isTransfer
-      ? kind === 'in'
-        ? 'Transfer In'
-        : 'Transfer Out'
-      : kind === 'in'
-        ? 'Inward'
-        : 'Outward'
+    const type: LedgerType = raw.movement_type
+      ? raw.movement_type === 'ISSUE' ? 'Site Issue' : 'Site Return'
+      : isTransfer
+        ? kind === 'in' ? 'Transfer In' : 'Transfer Out'
+        : kind === 'in' ? 'Inward' : 'Outward'
     const remarks = [raw.purpose, raw.remarks].filter(Boolean).join(' | ')
     bundle.rows.push({
-      key: `${kind}-${raw.id}`,
+      key: raw.movement_type ? `movement-${raw.id}` : `${kind}-${raw.id}`,
       sm_id: sm.id,
       sm_code: smCode(sm.id),
       site_id: sm.site_id,
@@ -251,6 +262,7 @@ export async function buildLedgers(sms: SmInfo[]): Promise<Map<number, Bundle>> 
   }
   inward.forEach((r) => push(r, 'in'))
   outward.forEach((r) => push(r, 'out'))
+  movements.forEach((row) => push(row, row.movement_type === 'ISSUE' ? 'in' : 'out'))
 
   for (const bundle of bundles.values()) {
     // Same-day order: receipts first, then issues, then entry order.
@@ -478,6 +490,10 @@ export function deleteProducts(ids: number[]) {
     if (allocated && allocated.n > 0) {
       throw new InventoryError(`"${product.product_name}" is allocated to a site. Remove the allocation first.`)
     }
+    const centralStock = await get<{ n: number }>('SELECT COUNT(*) AS n FROM site_central_stock WHERE product_id=?', id)
+    if (centralStock && centralStock.n > 0) {
+      throw new InventoryError(`"${product.product_name}" has Central Store balances or movement history and cannot be removed.`)
+    }
     await run('DELETE FROM products WHERE id = ?', id)
   })
 }
@@ -664,6 +680,12 @@ export function deleteAllocations(ids: number[]) {
   return removeMany(ids, async (id) => {
     const sm = (await loadSiteMaterials({ smIds: [id] }))[0]
     if (!sm) return
+    const movements = await get<{ n: number }>(
+      'SELECT COUNT(*) AS n FROM site_material_movements WHERE site_id=? AND product_id=?',
+      sm.site_id,
+      sm.product_id,
+    )
+    if (movements?.n) throw new InventoryError('This site item has material movement history and cannot be removed')
     const affectedIds = await deleteSiteMaterialHistory([id])
     await assertNonNegative(affectedIds)
     await run('DELETE FROM site_materials WHERE id = ?', id)
@@ -947,4 +969,182 @@ export function deleteTransfers(ids: number[]) {
     await run('DELETE FROM material_transfers WHERE id = ?', id)
     await assertNonNegative([t.from_site_material_id, t.to_site_material_id])
   })
+}
+
+/* ------------------------------------------------------------------ */
+/* Site-wise Central Store movements                                   */
+/* ------------------------------------------------------------------ */
+
+export async function saveCentralOpening(body: Body) {
+  try {
+    const siteId = idValue(body, 'site_id', 'Site')
+    const productId = idValue(body, 'product_id', 'Item')
+    const opening = quantity(body, 'opening_qty', 'Central Store opening quantity')
+    if (!(await get('SELECT id FROM sites WHERE id = ?', siteId))) throw new InventoryError('Site not found')
+    if (!(await get('SELECT id FROM products WHERE id = ?', productId))) throw new InventoryError('Item not found')
+    return transaction(async () => {
+      const centralId = await run(
+        `INSERT INTO site_central_stock (site_id, product_id, opening_qty) VALUES (?,?,?)
+         ON CONFLICT (site_id, product_id) DO UPDATE SET opening_qty=EXCLUDED.opening_qty`,
+        siteId,
+        productId,
+        opening,
+      )
+      const existing = await get<{ n: number }>(
+        'SELECT COUNT(*) AS n FROM site_material_movements WHERE site_id=? AND product_id=?',
+        siteId,
+        productId,
+      )
+      if (existing?.n) throw new InventoryError('Opening stock cannot be changed after movements are recorded')
+      return centralId
+    })
+  } catch (error) {
+    return friendlyDbError(error)
+  }
+}
+
+export async function siteMovementSummary(filter: TxnFilter = {}): Promise<SiteMovementSummary[]> {
+  const where: string[] = []
+  const params: unknown[] = []
+  if (filter.siteId) { where.push('cs.site_id=?'); params.push(filter.siteId) }
+  if (filter.productId) { where.push('cs.product_id=?'); params.push(filter.productId) }
+  const stock = await stockRows({ siteId: filter.siteId, productId: filter.productId })
+  const siteBalances = new Map(stock.map((row) => [`${row.site_id}:${row.product_id}`, row.available]))
+  const rows = await all<SiteMovementSummary>(
+    `SELECT cs.site_id, s.site_name, cs.product_id, p.product_code, p.product_name, p.unit,
+            cs.opening_qty AS central_opening,
+            ROUND((cs.opening_qty - COALESCE(SUM(m.quantity) FILTER (WHERE m.movement_type='ISSUE'),0)
+              + COALESCE(SUM(m.quantity) FILTER (WHERE m.movement_type='RETURN'),0))::numeric, 3)::float8 AS central_available,
+            COALESCE(SUM(m.quantity) FILTER (WHERE m.movement_type='ISSUE'
+              AND (? IS NULL OR m.movement_date >= ?) AND (? IS NULL OR m.movement_date <= ?)),0)::float8 AS total_issued,
+            COALESCE(SUM(m.quantity) FILTER (WHERE m.movement_type='RETURN'
+              AND (? IS NULL OR m.movement_date >= ?) AND (? IS NULL OR m.movement_date <= ?)),0)::float8 AS total_returned,
+            (COALESCE(SUM(m.quantity) FILTER (WHERE m.movement_type='ISSUE'
+              AND (? IS NULL OR m.movement_date >= ?) AND (? IS NULL OR m.movement_date <= ?)),0)
+              - COALESCE(SUM(m.quantity) FILTER (WHERE m.movement_type='RETURN'
+              AND (? IS NULL OR m.movement_date >= ?) AND (? IS NULL OR m.movement_date <= ?)),0))::float8 AS consumed,
+            0::float8 AS site_available
+       FROM site_central_stock cs
+       JOIN sites s ON s.id=cs.site_id JOIN products p ON p.id=cs.product_id
+       LEFT JOIN site_material_movements m ON m.site_id=cs.site_id AND m.product_id=cs.product_id
+       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+       GROUP BY cs.site_id, s.site_name, cs.product_id, p.product_code, p.product_name, p.unit, cs.opening_qty
+       ORDER BY s.site_name, p.product_name`,
+    ...Array.from({ length: 16 }, (_, index) => index % 4 < 2 ? filter.from ?? null : filter.to ?? null), ...params,
+  )
+  return rows.map((row) => ({ ...row, site_available: siteBalances.get(`${row.site_id}:${row.product_id}`) ?? 0 }))
+}
+
+export async function siteMovementRows(filter: TxnFilter = {}): Promise<SiteMovementRow[]> {
+  const where: string[] = []
+  const params: unknown[] = []
+  if (filter.siteId) { where.push('m.site_id=?'); params.push(filter.siteId) }
+  if (filter.productId) { where.push('m.product_id=?'); params.push(filter.productId) }
+  if (filter.from) { where.push('m.movement_date>=?'); params.push(filter.from) }
+  if (filter.to) { where.push('m.movement_date<=?'); params.push(filter.to) }
+  return all<SiteMovementRow>(
+    `SELECT m.id, m.site_id, s.site_name, m.product_id, p.product_code, p.product_name, p.unit,
+            m.movement_type, m.quantity, m.movement_date AS date, m.challan_no, m.issue_id,
+            i.movement_date AS issue_date, i.challan_no AS issue_challan_no, m.remarks
+       FROM site_material_movements m
+       JOIN sites s ON s.id=m.site_id JOIN products p ON p.id=m.product_id
+       LEFT JOIN site_material_movements i ON i.id=m.issue_id
+       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+       ORDER BY m.movement_date DESC, m.id DESC`,
+    ...params,
+  )
+}
+
+export async function availableSiteIssues(siteId?: number | null, productId?: number | null) {
+  const rows = await all<{
+    id: number; site_id: number; product_id: number; date: string; challan_no: string
+    site_name: string; product_name: string; unit: string; issued: number; returned: number
+  }>(
+    `SELECT i.id, i.site_id, i.product_id, i.movement_date AS date, i.challan_no,
+            s.site_name, p.product_name, p.unit, i.quantity::float8 AS issued,
+            COALESCE(SUM(r.quantity),0)::float8 AS returned
+       FROM site_material_movements i
+       JOIN sites s ON s.id=i.site_id JOIN products p ON p.id=i.product_id
+       LEFT JOIN site_material_movements r ON r.issue_id=i.id AND r.movement_type='RETURN'
+      WHERE i.movement_type='ISSUE' AND (? IS NULL OR i.site_id=?) AND (? IS NULL OR i.product_id=?)
+      GROUP BY i.id, s.site_name, p.product_name, p.unit
+      HAVING i.quantity > COALESCE(SUM(r.quantity),0)
+      ORDER BY i.movement_date DESC, i.id DESC`,
+    siteId ?? null, siteId ?? null, productId ?? null, productId ?? null,
+  )
+  return rows.map((row) => ({ ...row, remaining: round3(row.issued - row.returned) }))
+}
+
+async function assertCentralNonNegative(siteId: number, productId: number, opening: number) {
+  const rows = await all<{ id: number; movement_date: string; movement_type: 'ISSUE' | 'RETURN'; quantity: number }>(
+    `SELECT id, movement_date, movement_type, quantity FROM site_material_movements
+      WHERE site_id=? AND product_id=? ORDER BY movement_date, CASE movement_type WHEN 'ISSUE' THEN 0 ELSE 1 END, id`,
+    siteId,
+    productId,
+  )
+  let balance = opening
+  for (const row of rows) {
+    balance = round3(balance + (row.movement_type === 'RETURN' ? row.quantity : -row.quantity))
+    if (balance < 0) {
+      throw new InventoryError(`Not allowed: this site's Central Store would have negative stock (${balance}) on ${row.movement_date}.`)
+    }
+  }
+}
+
+export async function saveSiteMovement(body: Body) {
+  try {
+    const kind = text(body, 'movement_type', 'Movement type', true, 10)
+    if (kind !== 'ISSUE' && kind !== 'RETURN') throw new InventoryError('Invalid movement type')
+    const siteId = idValue(body, 'site_id', 'Site')
+    const productId = idValue(body, 'product_id', 'Item')
+    const date = dateValue(body, 'date', 'Issue / return date') as string
+    const qty = quantity(body, 'quantity', 'Quantity', { positive: true })
+    const challan = text(body, 'challan_no', 'Challan number', true, 60)
+    const remarks = text(body, 'remarks', 'Remarks', false, 1000)
+    if (!(await get('SELECT id FROM sites WHERE id=?', siteId))) throw new InventoryError('Site not found')
+    if (!(await get('SELECT id FROM products WHERE id=?', productId))) throw new InventoryError('Item not found')
+    return await transaction(async () => {
+      const central = await get<{ id: number; opening_qty: number }>(
+        `INSERT INTO site_central_stock (site_id, product_id, opening_qty) VALUES (?,?,0)
+         ON CONFLICT (site_id, product_id) DO UPDATE SET site_id=EXCLUDED.site_id
+         RETURNING id, opening_qty`, siteId, productId,
+      )
+      await get('SELECT id FROM site_central_stock WHERE id=? FOR UPDATE', central?.id)
+      const smId = await resolveSiteMaterial(siteId, productId, kind === 'ISSUE' ? 'inward' : 'outward', date)
+      let issueId: number | null = null
+      if (kind === 'ISSUE') {
+        const totals = await get<{ issued: number; returned: number }>(
+          `SELECT COALESCE(SUM(quantity) FILTER (WHERE movement_type='ISSUE'),0)::float8 AS issued,
+                  COALESCE(SUM(quantity) FILTER (WHERE movement_type='RETURN'),0)::float8 AS returned
+             FROM site_material_movements WHERE site_id=? AND product_id=?`, siteId, productId,
+        )
+        const available = round3((central?.opening_qty ?? 0) - (totals?.issued ?? 0) + (totals?.returned ?? 0))
+        if (qty > available) throw new InventoryError(`Only ${available} ${((await get<{ unit: string }>('SELECT unit FROM products WHERE id=?', productId))?.unit ?? '')} is available in this site's Central Store.`)
+      } else {
+        issueId = idValue(body, 'issue_id', 'Original issue')
+        const issue = await get<{ quantity: number; site_id: number; product_id: number; movement_date: string }>(
+          `SELECT quantity, site_id, product_id, movement_date FROM site_material_movements WHERE id=? AND movement_type='ISSUE' FOR UPDATE`, issueId,
+        )
+        if (!issue || issue.site_id !== siteId || issue.product_id !== productId) {
+          throw new InventoryError('The selected issue does not belong to this site and item')
+        }
+        if (date < issue.movement_date) throw new InventoryError('Return date cannot be before the original issue date')
+        const returned = await get<{ total: number }>(
+          `SELECT COALESCE(SUM(quantity),0)::float8 AS total FROM site_material_movements WHERE issue_id=? AND movement_type='RETURN'`, issueId,
+        )
+        if (round3((returned?.total ?? 0) + qty) > issue.quantity) {
+          throw new InventoryError(`Return quantity exceeds the unreturned ${round3(issue.quantity - (returned?.total ?? 0))} remaining on the original issue`)
+        }
+      }
+      const movementId = await run(
+        `INSERT INTO site_material_movements (site_id, product_id, movement_type, quantity, movement_date, challan_no, issue_id, remarks)
+         VALUES (?,?,?,?,?,?,?,?)`, siteId, productId, kind, qty, date, challan, issueId, remarks,
+      )
+      await assertCentralNonNegative(siteId, productId, central?.opening_qty ?? 0)
+      await assertNonNegative([smId])
+      return movementId
+    })
+  } catch (error) {
+    return friendlyDbError(error)
+  }
 }
