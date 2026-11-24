@@ -52,7 +52,7 @@ export interface StockRow {
   txn_count: number
 }
 
-export type LedgerType = 'Inward' | 'Outward' | 'Transfer In' | 'Transfer Out'
+export type LedgerType = 'Inward' | 'Outward' | 'Transfer In' | 'Transfer Out' | 'Site Issue' | 'Site Return'
 
 export interface LedgerRow {
   key: string
@@ -97,6 +97,41 @@ export interface TxnRow {
   /** inward: received by / outward: issued by */
   person: string
   purpose: string
+}
+
+export type SiteMovementType = 'ISSUE' | 'RETURN'
+
+export interface SiteMovementRow {
+  id: number
+  site_id: number
+  site_name: string
+  product_id: number
+  product_code: string
+  product_name: string
+  unit: string
+  movement_type: SiteMovementType
+  quantity: number
+  date: string
+  challan_no: string
+  issue_id: number | null
+  issue_date: string | null
+  issue_challan_no: string | null
+  remarks: string
+}
+
+export interface SiteMovementSummary {
+  site_id: number
+  site_name: string
+  product_id: number
+  product_code: string
+  product_name: string
+  unit: string
+  central_opening: number
+  central_available: number
+  total_issued: number
+  total_returned: number
+  consumed: number
+  site_available: number
 }
 
 export interface TransferRow {

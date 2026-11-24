@@ -51,6 +51,8 @@ const savers: Record<string, (body: Body) => Promise<number>> = {
   inward: inv.saveInward,
   outward: inv.saveOutward,
   transfers: inv.saveTransfer,
+  'central-stock': inv.saveCentralOpening,
+  'site-movements': inv.saveSiteMovement,
 }
 
 const deleters: Record<string, (ids: number[]) => Promise<DeleteResult>> = {
@@ -88,6 +90,12 @@ export async function GET(request: Request, { params }: Ctx) {
         return NextResponse.json(await inv.listTxns(resource, { siteId, productId, from, to }))
       case 'transfers':
         return NextResponse.json(await inv.listTransfers({ siteId, from, to }))
+      case 'site-movements':
+        return NextResponse.json(await inv.siteMovementRows({ siteId, productId, from, to }))
+      case 'movement-summary':
+        return NextResponse.json(await inv.siteMovementSummary({ siteId, productId, from, to }))
+      case 'movement-issues':
+        return NextResponse.json(await inv.availableSiteIssues(siteId, productId))
       default:
         return NextResponse.json({ error: 'Not found' }, { status: 404 })
     }
@@ -104,6 +112,9 @@ async function write(request: Request, ctx: Ctx, method: 'POST' | 'PUT') {
   if (!save) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   if (resource === 'site-items' && method === 'PUT') {
     return NextResponse.json({ error: 'Site items can only be created with POST' }, { status: 405 })
+  }
+  if ((resource === 'site-movements' || resource === 'central-stock') && method === 'PUT') {
+    return NextResponse.json({ error: 'Movement records and opening stock can only be created with POST' }, { status: 405 })
   }
   try {
     let parsed: unknown
