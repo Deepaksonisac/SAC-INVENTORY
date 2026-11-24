@@ -1,8 +1,18 @@
 'use client'
 
 import { useState } from 'react'
-import { Download, Plus, RotateCcw } from 'lucide-react'
+import { Download, Pencil, Plus, RotateCcw, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { DataTable, type Column } from '@/components/data-table'
 import { FormDialog, type FieldDef, type Values } from '@/components/form-dialog'
@@ -11,7 +21,7 @@ import { ProductFilter, SiteFilter } from '@/components/filters'
 import { apiSend, useApi } from '@/lib/api'
 import { exportTable } from '@/lib/export'
 import { formatDate, formatQty, todayISO } from '@/lib/format'
-import type { Product, Site, SiteMovementRow, SiteMovementSummary } from '@/lib/types'
+import type { DeleteResult, Product, Site, SiteMovementRow, SiteMovementSummary } from '@/lib/types'
 
 interface OpenIssue {
   id: number
@@ -27,7 +37,7 @@ interface OpenIssue {
   remaining: number
 }
 
-type DialogMode = 'issue' | 'return' | 'opening'
+type DialogMode = 'issue' | 'return' | 'opening' | 'edit-issue' | 'edit-return'
 
 export function SiteMovementsPage() {
   const [siteId, setSiteId] = useState('')
@@ -35,6 +45,9 @@ export function SiteMovementsPage() {
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [dialog, setDialog] = useState<DialogMode | null>(null)
+  const [editingMovement, setEditingMovement] = useState<SiteMovementRow | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<SiteMovementRow | null>(null)
+  const [deleting, setDeleting] = useState(false)
   const [notice, setNotice] = useState('')
   const { data: sites } = useApi<Site[]>('sites')
   const { data: products } = useApi<Product[]>('products')
@@ -67,21 +80,29 @@ export function SiteMovementsPage() {
   ]
 
   const issueFields = (values: Values): FieldDef[] => [
-      { name: 'site_id', label: 'Site', type: 'select', required: true, options: (sites ?? []).map((site) => ({ value: site.id, label: site.site_name })) },
-      { name: 'product_id', label: 'Item', type: 'select', required: true, disabled: !values.site_id, options: (products ?? []).map((product) => ({ value: product.id, label: `${product.product_name} (${product.unit})` })) },
+      { name: 'site_id', label: 'Site', type: 'select', required: true, disabled: dialog === 'edit-issue', options: (sites ?? []).map((site) => ({ value: site.id, label: site.site_name })) },
+      { name: 'product_id', label: 'Item', type: 'select', required: true, disabled: dialog === 'edit-issue' || !values.site_id, options: (products ?? []).map((product) => ({ value: product.id, label: `${product.product_name} (${product.unit})` })) },
       { name: 'date', label: 'Issue date', type: 'date', required: true },
       { name: 'quantity', label: 'Quantity issued', type: 'number', required: true, hint: 'Quantity is checked against this site’s Central Store balance.' },
       { name: 'challan_no', label: 'Challan number', required: true },
       { name: 'remarks', label: 'Notes', type: 'textarea', full: true },
     ]
 
-  const returnFields = (): FieldDef[] => [
-    { name: 'issue_id', label: 'Original issue', type: 'select', required: true, options: (issues ?? []).map((issue) => ({ value: issue.id, label: `${issue.site_name} · ${issue.product_name} · ${formatDate(issue.date)} · ${issue.challan_no || `Issue #${issue.id}`} · ${formatQty(issue.remaining)} ${issue.unit} remaining` })) },
-    { name: 'date', label: 'Return date', type: 'date', required: true },
-    { name: 'quantity', label: 'Quantity returned', type: 'number', required: true },
-    { name: 'challan_no', label: 'Return challan number', required: true },
-    { name: 'remarks', label: 'Notes', type: 'textarea', full: true },
-  ]
+  const returnFields = (): FieldDef[] => dialog === 'edit-return'
+    ? [
+        { name: 'issue_id', label: 'Original issue ID', readOnly: true, hint: `Linked challan: ${editingMovement?.issue_challan_no || '—'}` },
+        { name: 'date', label: 'Return date', type: 'date', required: true },
+        { name: 'quantity', label: 'Quantity returned', type: 'number', required: true },
+        { name: 'challan_no', label: 'Return challan number', required: true },
+        { name: 'remarks', label: 'Notes', type: 'textarea', full: true },
+      ]
+    : [
+        { name: 'issue_id', label: 'Original issue', type: 'select', required: true, options: (issues ?? []).map((issue) => ({ value: issue.id, label: `${issue.site_name} · ${issue.product_name} · ${formatDate(issue.date)} · ${issue.challan_no || `Issue #${issue.id}`} · ${formatQty(issue.remaining)} ${issue.unit} remaining` })) },
+        { name: 'date', label: 'Return date', type: 'date', required: true },
+        { name: 'quantity', label: 'Quantity returned', type: 'number', required: true },
+        { name: 'challan_no', label: 'Return challan number', required: true },
+        { name: 'remarks', label: 'Notes', type: 'textarea', full: true },
+      ]
 
   const openingFields = (values: Values): FieldDef[] => [
     { name: 'site_id', label: 'Site', type: 'select', required: true, options: (sites ?? []).map((site) => ({ value: site.id, label: site.site_name })) },
@@ -91,36 +112,61 @@ export function SiteMovementsPage() {
 
   const openForm = (mode: DialogMode) => {
     setNotice('')
+    setEditingMovement(null)
     setDialog(mode)
   }
 
   const openingFor = (site: string, product: string) =>
     summary?.find((row) => String(row.site_id) === site && String(row.product_id) === product)?.central_opening ?? 0
+  const isReturnMode = dialog === 'return' || dialog === 'edit-return'
+  const isOpeningMode = dialog === 'opening'
+  const isEditingMode = dialog === 'edit-issue' || dialog === 'edit-return'
 
-  const initial: Values = dialog === 'return'
-    ? { issue_id: '', date: todayISO(), quantity: '', challan_no: '', remarks: '' }
-    : dialog === 'opening'
-      ? { site_id: siteId || '', product_id: productId || '', opening_qty: String(openingFor(siteId, productId)) }
-      : { site_id: siteId || '', product_id: productId || '', date: todayISO(), quantity: '', challan_no: '', remarks: '' }
+  const initial: Values = editingMovement && isEditingMode
+    ? {
+        site_id: String(editingMovement.site_id),
+        product_id: String(editingMovement.product_id),
+        issue_id: String(editingMovement.issue_id ?? ''),
+        date: editingMovement.date,
+        quantity: String(editingMovement.quantity),
+        challan_no: editingMovement.challan_no,
+        remarks: editingMovement.remarks,
+      }
+    : dialog === 'return'
+      ? { issue_id: '', date: todayISO(), quantity: '', challan_no: '', remarks: '' }
+      : dialog === 'opening'
+        ? { site_id: siteId || '', product_id: productId || '', opening_qty: String(openingFor(siteId, productId)) }
+        : { site_id: siteId || '', product_id: productId || '', date: todayISO(), quantity: '', challan_no: '', remarks: '' }
 
   const derive = (values: Values, changed: string): Values => {
     if (dialog === 'return' && changed === 'issue_id') {
       const issue = issues?.find((row) => String(row.id) === values.issue_id)
       return issue ? { site_id: String(issue.site_id), product_id: String(issue.product_id) } : {}
     }
-    if (dialog === 'opening' && changed === 'site_id') return { product_id: '', opening_qty: '0' }
-    if (dialog === 'opening' && changed === 'product_id') return { opening_qty: String(openingFor(values.site_id, values.product_id)) }
+    if (isOpeningMode && changed === 'site_id') return { product_id: '', opening_qty: '0' }
+    if (isOpeningMode && changed === 'product_id') return { opening_qty: String(openingFor(values.site_id, values.product_id)) }
     if (changed === 'site_id') return { product_id: '', issue_id: '' }
     return {}
   }
 
   const submit = async (values: Values) => {
-    if (dialog === 'opening') {
+    if (isOpeningMode) {
       await apiSend('POST', 'central-stock', { site_id: Number(values.site_id), product_id: Number(values.product_id), opening_qty: Number(values.opening_qty) })
       setNotice('Central Store opening quantity saved for this site and item.')
+    } else if (isEditingMode && editingMovement) {
+      await apiSend('PUT', 'site-movements', {
+        id: editingMovement.id,
+        movement_type: editingMovement.movement_type,
+        issue_id: editingMovement.issue_id,
+        date: values.date,
+        quantity: Number(values.quantity),
+        challan_no: values.challan_no,
+        remarks: values.remarks,
+      })
+      setNotice('Movement updated and stock balances recalculated.')
     } else {
       await apiSend('POST', 'site-movements', {
-        movement_type: dialog === 'return' ? 'RETURN' : 'ISSUE',
+        movement_type: isReturnMode ? 'RETURN' : 'ISSUE',
         site_id: Number(values.site_id),
         product_id: Number(values.product_id),
         issue_id: values.issue_id ? Number(values.issue_id) : undefined,
@@ -129,9 +175,25 @@ export function SiteMovementsPage() {
         challan_no: values.challan_no,
         remarks: values.remarks,
       })
-      setNotice(dialog === 'return' ? 'Material return recorded and both balances updated.' : 'Material issued and both balances updated.')
+      setNotice(isReturnMode ? 'Material return recorded and both balances updated.' : 'Material issued and both balances updated.')
     }
+    setEditingMovement(null)
     setDialog(null)
+  }
+
+  const removeMovement = async () => {
+    if (!deleteTarget) return
+    setDeleting(true)
+    try {
+      const result = await apiSend<DeleteResult>('DELETE', 'site-movements', { ids: [deleteTarget.id] })
+      if (result.errors.length) throw new Error(result.errors[0])
+      setNotice('Movement deleted and stock balances recalculated.')
+    } catch (error) {
+      setNotice(error instanceof Error ? `Could not delete movement: ${error.message}` : 'Could not delete movement.')
+    } finally {
+      setDeleting(false)
+      setDeleteTarget(null)
+    }
   }
 
   const exportSummary = () => exportTable('xlsx', 'site-wise-material-movement-summary', [
@@ -180,7 +242,15 @@ export function SiteMovementsPage() {
             <Button variant="outline" size="sm" onClick={() => void exportHistory()} disabled={!movements?.length}><Download /> Export Excel</Button>
           </div>
         </CardHeader>
-        <CardContent><DataTable columns={movementColumns} rows={movements} rowKey={(row) => row.id} isLoading={movementsLoading} exportTitle="Site Material Movement History" emptyText="No material movements match these filters." /></CardContent>
+        <CardContent><DataTable columns={movementColumns} rows={movements} rowKey={(row) => row.id} isLoading={movementsLoading} exportTitle="Site Material Movement History" emptyText="No material movements match these filters." rowActions={(row) => (
+          <div className="inline-flex items-center gap-0.5">
+            <Button variant="ghost" size="icon-sm" aria-label={`Edit ${row.movement_type === 'ISSUE' ? 'issue' : 'return'} for ${row.product_name}`} onClick={() => {
+              setEditingMovement(row)
+              setDialog(row.movement_type === 'ISSUE' ? 'edit-issue' : 'edit-return')
+            }}><Pencil /></Button>
+            <Button variant="ghost" size="icon-sm" aria-label={`Delete ${row.movement_type === 'ISSUE' ? 'issue' : 'return'} for ${row.product_name}`} className="text-destructive hover:text-destructive" onClick={() => setDeleteTarget(row)}><Trash2 /></Button>
+          </div>
+        )} /></CardContent>
       </Card>
       <details className="rounded-lg border bg-card px-4 py-3">
         <summary className="cursor-pointer text-sm font-medium">Central Store opening balance setup</summary>
@@ -191,16 +261,44 @@ export function SiteMovementsPage() {
       </details>
       <FormDialog
         open={dialog !== null}
-        onOpenChange={(open) => !open && setDialog(null)}
-        mode="create"
-        title={dialog === 'opening' ? 'Set Central Store opening stock' : dialog === 'return' ? 'Record material return' : 'Issue material to site'}
-        description={dialog === 'opening' ? 'Opening quantities are maintained separately for every site and item.' : dialog === 'return' ? 'Select an original issue. The return is capped at its unreturned quantity.' : 'Issue from this site’s Central Store. The destination site balance is credited automatically.'}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDialog(null)
+            setEditingMovement(null)
+          }
+        }}
+        mode={isEditingMode ? 'edit' : 'create'}
+        title={isOpeningMode ? 'Set Central Store opening stock' : isEditingMode ? `Edit material ${isReturnMode ? 'return' : 'out'}` : isReturnMode ? 'Record material return' : 'Issue material to site'}
+        description={isOpeningMode ? 'Opening quantities are maintained separately for every site and item.' : isEditingMode ? 'Changes are validated against the original issue and recalculated stock balances.' : isReturnMode ? 'Select an original issue. The return is capped at its unreturned quantity.' : 'Issue from this site’s Central Store. The destination site balance is credited automatically.'}
         initial={initial}
-        fields={(values) => dialog === 'opening' ? openingFields(values) : dialog === 'return' ? returnFields() : issueFields(values)}
+        fields={(values) => isOpeningMode ? openingFields(values) : isReturnMode ? returnFields() : issueFields(values)}
         derive={derive}
         onSubmit={submit}
-        submitLabel={dialog === 'opening' ? 'Save opening stock' : dialog === 'return' ? 'Save return' : 'Save issue'}
+        submitLabel={isOpeningMode ? 'Save opening stock' : isEditingMode ? 'Update movement' : isReturnMode ? 'Save return' : 'Save issue'}
       />
+      <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => !open && !deleting && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this material {deleteTarget?.movement_type === 'ISSUE' ? 'issue' : 'return'}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This recalculates the site and Central Store balances. An issue with return records must have those returns deleted first.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={deleting}
+              onClick={(event) => {
+                event.preventDefault()
+                void removeMovement()
+              }}
+            >
+              {deleting ? 'Deleting...' : 'Delete movement'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

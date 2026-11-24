@@ -1148,3 +1148,113 @@ export async function saveSiteMovement(body: Body) {
     return friendlyDbError(error)
   }
 }
+
+export async function updateSiteMovement(body: Body) {
+  try {
+    const id = idValue(body, 'id', 'Movement')
+    const kind = text(body, 'movement_type', 'Movement type', true, 10)
+    if (kind !== 'ISSUE' && kind !== 'RETURN') throw new InventoryError('Invalid movement type')
+    const date = dateValue(body, 'date', 'Issue / return date') as string
+    const qty = quantity(body, 'quantity', 'Quantity', { positive: true })
+    const challan = text(body, 'challan_no', 'Challan number', true, 60)
+    const remarks = text(body, 'remarks', 'Remarks', false, 1000)
+
+    return await transaction(async () => {
+      const movementRef = await get<{ site_id: number; product_id: number }>(
+        'SELECT site_id, product_id FROM site_material_movements WHERE id=?',
+        id,
+      )
+      if (!movementRef) throw new InventoryError('Movement not found')
+      const central = await get<{ opening_qty: number }>(
+        'SELECT opening_qty FROM site_central_stock WHERE site_id=? AND product_id=? FOR UPDATE',
+        movementRef.site_id,
+        movementRef.product_id,
+      )
+      if (!central) throw new InventoryError('Central Store balance was not found for this movement')
+      const movement = await get<{
+        id: number; site_id: number; product_id: number; movement_type: 'ISSUE' | 'RETURN'; issue_id: number | null
+      }>('SELECT id, site_id, product_id, movement_type, issue_id FROM site_material_movements WHERE id=? FOR UPDATE', id)
+      if (!movement) throw new InventoryError('Movement not found')
+      if (movement.movement_type !== kind) throw new InventoryError('Movement type cannot be changed')
+
+      if (kind === 'ISSUE') {
+        const returns = await get<{ total: number; earlier: number }>(
+          `SELECT COALESCE(SUM(quantity),0)::float8 AS total,
+                  COUNT(*) FILTER (WHERE movement_date < ?)::int AS earlier
+             FROM site_material_movements WHERE issue_id=? AND movement_type='RETURN'`,
+          date,
+          id,
+        )
+        if ((returns?.total ?? 0) > qty) {
+          throw new InventoryError('Issued quantity cannot be less than the quantity already returned')
+        }
+        if (returns?.earlier) throw new InventoryError('Issue date cannot be later than an existing return date')
+      } else {
+        if (!movement.issue_id) throw new InventoryError('Original issue reference is missing')
+        const issue = await get<{ quantity: number; movement_date: string }>(
+          `SELECT quantity, movement_date FROM site_material_movements WHERE id=? AND movement_type='ISSUE' FOR UPDATE`,
+          movement.issue_id,
+        )
+        if (!issue) throw new InventoryError('Original issue was not found')
+        if (date < issue.movement_date) throw new InventoryError('Return date cannot be before the original issue date')
+        const returned = await get<{ total: number }>(
+          `SELECT COALESCE(SUM(quantity),0)::float8 AS total FROM site_material_movements
+            WHERE issue_id=? AND movement_type='RETURN' AND id<>?`,
+          movement.issue_id,
+          id,
+        )
+        if (round3((returned?.total ?? 0) + qty) > issue.quantity) {
+          throw new InventoryError(`Return quantity exceeds the unreturned ${round3(issue.quantity - (returned?.total ?? 0))} remaining on the original issue`)
+        }
+      }
+
+      await run(
+        'UPDATE site_material_movements SET quantity=?, movement_date=?, challan_no=?, remarks=? WHERE id=?',
+        qty,
+        date,
+        challan,
+        remarks,
+        id,
+      )
+      const sm = await findSiteMaterial(movement.site_id, movement.product_id)
+      if (!sm) throw new InventoryError('Site item allocation was not found')
+      await assertCentralNonNegative(movement.site_id, movement.product_id, central.opening_qty)
+      await assertNonNegative([sm.id])
+      return id
+    })
+  } catch (error) {
+    return friendlyDbError(error)
+  }
+}
+
+export function deleteSiteMovements(ids: number[]) {
+  return removeMany(ids, async (id) => {
+    const movementRef = await get<{ site_id: number; product_id: number }>(
+      'SELECT site_id, product_id FROM site_material_movements WHERE id=?',
+      id,
+    )
+    if (!movementRef) return
+    const central = await get<{ opening_qty: number }>(
+      'SELECT opening_qty FROM site_central_stock WHERE site_id=? AND product_id=? FOR UPDATE',
+      movementRef.site_id,
+      movementRef.product_id,
+    )
+    if (!central) throw new InventoryError('Central Store balance was not found for this movement')
+    const movement = await get<{
+      site_id: number; product_id: number; movement_type: 'ISSUE' | 'RETURN'
+    }>('SELECT site_id, product_id, movement_type FROM site_material_movements WHERE id=? FOR UPDATE', id)
+    if (!movement) return
+    if (movement.movement_type === 'ISSUE') {
+      const returns = await get<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM site_material_movements WHERE issue_id=? AND movement_type='RETURN'",
+        id,
+      )
+      if (returns?.n) throw new InventoryError('This issue has return records. Delete its returns first.')
+    }
+    const sm = await findSiteMaterial(movement.site_id, movement.product_id)
+    if (!sm) throw new InventoryError('Site item allocation was not found')
+    await run('DELETE FROM site_material_movements WHERE id=?', id)
+    await assertCentralNonNegative(movement.site_id, movement.product_id, central.opening_qty)
+    await assertNonNegative([sm.id])
+  })
+}
