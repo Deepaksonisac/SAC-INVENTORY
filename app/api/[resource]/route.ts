@@ -55,6 +55,10 @@ const savers: Record<string, (body: Body) => Promise<number>> = {
   'site-movements': inv.saveSiteMovement,
 }
 
+const updaters: Record<string, (body: Body) => Promise<number>> = {
+  'site-movements': inv.updateSiteMovement,
+}
+
 const deleters: Record<string, (ids: number[]) => Promise<DeleteResult>> = {
   sites: inv.deleteSites,
   products: inv.deleteProducts,
@@ -62,6 +66,7 @@ const deleters: Record<string, (ids: number[]) => Promise<DeleteResult>> = {
   inward: (ids) => inv.deleteTxns('inward', ids),
   outward: (ids) => inv.deleteTxns('outward', ids),
   transfers: inv.deleteTransfers,
+  'site-movements': inv.deleteSiteMovements,
 }
 
 export async function GET(request: Request, { params }: Ctx) {
@@ -108,13 +113,14 @@ async function write(request: Request, ctx: Ctx, method: 'POST' | 'PUT') {
   const denied = await unauthorized(request)
   if (denied) return denied
   const { resource } = await ctx.params
-  const save = savers[resource]
-  if (!save) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   if (resource === 'site-items' && method === 'PUT') {
     return NextResponse.json({ error: 'Site items can only be created with POST' }, { status: 405 })
   }
-  if ((resource === 'site-movements' || resource === 'central-stock') && method === 'PUT') {
-    return NextResponse.json({ error: 'Movement records and opening stock can only be created with POST' }, { status: 405 })
+  const save = method === 'PUT' ? updaters[resource] ?? savers[resource] : savers[resource]
+  if (!save) {
+    return method === 'PUT' && resource === 'central-stock'
+      ? NextResponse.json({ error: 'Central Store opening stock can only be created with POST' }, { status: 405 })
+      : NextResponse.json({ error: 'Not found' }, { status: 404 })
   }
   try {
     let parsed: unknown
