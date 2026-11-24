@@ -1016,13 +1016,13 @@ export async function siteMovementSummary(filter: TxnFilter = {}): Promise<SiteM
             ROUND((cs.opening_qty - COALESCE(SUM(m.quantity) FILTER (WHERE m.movement_type='ISSUE'),0)
               + COALESCE(SUM(m.quantity) FILTER (WHERE m.movement_type='RETURN'),0))::numeric, 3)::float8 AS central_available,
             COALESCE(SUM(m.quantity) FILTER (WHERE m.movement_type='ISSUE'
-              AND (? IS NULL OR m.movement_date >= ?) AND (? IS NULL OR m.movement_date <= ?)),0)::float8 AS total_issued,
+              AND (CAST(? AS text) IS NULL OR m.movement_date >= ?) AND (CAST(? AS text) IS NULL OR m.movement_date <= ?)),0)::float8 AS total_issued,
             COALESCE(SUM(m.quantity) FILTER (WHERE m.movement_type='RETURN'
-              AND (? IS NULL OR m.movement_date >= ?) AND (? IS NULL OR m.movement_date <= ?)),0)::float8 AS total_returned,
+              AND (CAST(? AS text) IS NULL OR m.movement_date >= ?) AND (CAST(? AS text) IS NULL OR m.movement_date <= ?)),0)::float8 AS total_returned,
             (COALESCE(SUM(m.quantity) FILTER (WHERE m.movement_type='ISSUE'
-              AND (? IS NULL OR m.movement_date >= ?) AND (? IS NULL OR m.movement_date <= ?)),0)
+              AND (CAST(? AS text) IS NULL OR m.movement_date >= ?) AND (CAST(? AS text) IS NULL OR m.movement_date <= ?)),0)
               - COALESCE(SUM(m.quantity) FILTER (WHERE m.movement_type='RETURN'
-              AND (? IS NULL OR m.movement_date >= ?) AND (? IS NULL OR m.movement_date <= ?)),0))::float8 AS consumed,
+              AND (CAST(? AS text) IS NULL OR m.movement_date >= ?) AND (CAST(? AS text) IS NULL OR m.movement_date <= ?)),0))::float8 AS consumed,
             0::float8 AS site_available
        FROM site_central_stock cs
        JOIN sites s ON s.id=cs.site_id JOIN products p ON p.id=cs.product_id
@@ -1066,7 +1066,7 @@ export async function availableSiteIssues(siteId?: number | null, productId?: nu
        FROM site_material_movements i
        JOIN sites s ON s.id=i.site_id JOIN products p ON p.id=i.product_id
        LEFT JOIN site_material_movements r ON r.issue_id=i.id AND r.movement_type='RETURN'
-      WHERE i.movement_type='ISSUE' AND (? IS NULL OR i.site_id=?) AND (? IS NULL OR i.product_id=?)
+      WHERE i.movement_type='ISSUE' AND (CAST(? AS integer) IS NULL OR i.site_id=?) AND (CAST(? AS integer) IS NULL OR i.product_id=?)
       GROUP BY i.id, s.site_name, p.product_name, p.unit
       HAVING i.quantity > COALESCE(SUM(r.quantity),0)
       ORDER BY i.movement_date DESC, i.id DESC`,
